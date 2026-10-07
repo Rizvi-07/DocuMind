@@ -1,0 +1,14 @@
+**/bin/
+**/obj/
+**/node_modules/
+**/.next/
+**/.vs/
+
+**/.env
+**/.env.*
+!**/.env.example
+
+backend/storage/
+**/TestResults/
+**/*.bak
+**/*.user
