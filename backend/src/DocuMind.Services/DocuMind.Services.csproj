@@ -1,6 +1,8 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
+  <!-- Use Identity token and URL helpers from the installed ASP.NET Core shared framework. -->
   <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
     <ProjectReference Include="..\DocuMind.Data\DocuMind.Data.csproj" />
   </ItemGroup>
 

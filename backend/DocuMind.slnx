@@ -5,4 +5,8 @@
     <Project Path="src/DocuMind.Services/DocuMind.Services.csproj" />
     <Project Path="src/DocuMind.Worker/DocuMind.Worker.csproj" />
   </Folder>
+  <!-- Executable checks exercise real HTTP and PostgreSQL behavior in an isolated test database. -->
+  <Folder Name="/tests/">
+    <Project Path="tests/DocuMind.Auth.FlowChecks/DocuMind.Auth.FlowChecks.csproj" />
+  </Folder>
 </Solution>
