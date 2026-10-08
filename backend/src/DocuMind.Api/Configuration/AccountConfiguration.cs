@@ -27,6 +27,7 @@ public static class AccountConfiguration
             (tokens, accounts) => tokens.TokenLifespan = accounts.Value.ConfirmationTokenLifetime);
         services.AddMemoryCache();
         services.AddScoped<IAccountService, AccountService>();
+        services.AddScoped<IIdentitySessionService, IdentitySessionService>();
 
         if (environment.IsDevelopment())
         {
@@ -58,6 +59,19 @@ public static class AccountConfiguration
                 context.Connection.RemoteIpAddress?.ToString() ?? "unknown", _ => new FixedWindowRateLimiterOptions
                 {
                     PermitLimit = 20, Window = TimeSpan.FromMinutes(1), QueueLimit = 0, AutoReplenishment = true
+                }));
+            // Session writes have their own budget; canonical action names also protect route variations.
+            options.AddPolicy("account-session", context => RateLimitPartition.GetFixedWindowLimiter(
+                $"{context.GetEndpoint()?.Metadata.GetMetadata<ControllerActionDescriptor>()?.ActionName}:{context.Connection.RemoteIpAddress}",
+                _ => new FixedWindowRateLimiterOptions
+                {
+                    PermitLimit = 10, Window = TimeSpan.FromMinutes(1), QueueLimit = 0, AutoReplenishment = true
+                }));
+            options.AddPolicy("account-bootstrap", context => RateLimitPartition.GetFixedWindowLimiter(
+                $"{context.GetEndpoint()?.Metadata.GetMetadata<ControllerActionDescriptor>()?.ActionName}:{context.Connection.RemoteIpAddress}",
+                _ => new FixedWindowRateLimiterOptions
+                {
+                    PermitLimit = 60, Window = TimeSpan.FromMinutes(1), QueueLimit = 0, AutoReplenishment = true
                 }));
             options.OnRejected = async (context, cancellationToken) =>
             {

@@ -3,6 +3,14 @@ using System.Net;
 using System.Net.Http.Json;
 using System.Net.Sockets;
 using System.Security.Cryptography;
+using System.Text.RegularExpressions;
+using DocuMind.Api.Configuration;
+using Microsoft.AspNetCore.Antiforgery;
+using Microsoft.AspNetCore.Authentication.Cookies;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Hosting.Internal;
+using Microsoft.Extensions.Options;
 using System.Text.Json;
 using DocuMind.Data;
 using DocuMind.Data.Entities;
@@ -59,7 +67,7 @@ internal static class RegistrationFlowChecks
             // Passwords and test email addresses are generated in memory and never written to tracked files.
             var password = "Aa9!" + Convert.ToHexString(RandomNumberGenerator.GetBytes(16));
             var email = NewEmail();
-            var api = await StartApiAsync(testConnection);
+            var api = await StartApiAsync(testConnection, useFrontend: true);
             using var client = new HttpClient { BaseAddress = api.Address };
             var registration = new { email, password, confirmPassword = password };
             using var request = new HttpRequestMessage(HttpMethod.Post, "api/v1/auth/register")
@@ -67,6 +75,7 @@ internal static class RegistrationFlowChecks
                 Content = JsonContent.Create(registration)
             };
             request.Headers.Host = "untrusted.example";
+            request.Headers.Add(BrowserAuthenticationConfiguration.CsrfHeaderName, await GetCsrfTokenAsync(client));
             using var registered = await client.SendAsync(request);
             var acceptedBody = await registered.Content.ReadAsStringAsync();
             Assert(registered.StatusCode == HttpStatusCode.Accepted, "Successful registration returns 202.");
@@ -83,7 +92,7 @@ internal static class RegistrationFlowChecks
                 && query["token"].ToString().All(character => char.IsAsciiLetterOrDigit(character) || character is '-' or '_'),
                 "Confirmation links use the configured origin and URL-safe encoding, even with a spoofed Host header.");
 
-            using var duplicate = await client.PostAsJsonAsync("api/v1/auth/register",
+            using var duplicate = await PostProtectedAsync(client, "api/v1/auth/register",
                 new { email, password = password + "Changed", confirmPassword = password + "Changed" });
             Assert(duplicate.StatusCode == HttpStatusCode.Accepted
                 && await duplicate.Content.ReadAsStringAsync() == acceptedBody,
@@ -94,69 +103,82 @@ internal static class RegistrationFlowChecks
                 .Select(account => account.PasswordHash).SingleAsync() == user.PasswordHash,
                 "Duplicate registration never changes the existing password hash.");
 
-            using var invalidEmail = await client.PostAsJsonAsync("api/v1/auth/register",
+            using var invalidEmail = await PostProtectedAsync(client, "api/v1/auth/register",
                 new { email = "not-an-email", password, confirmPassword = password });
             Assert(invalidEmail.StatusCode == HttpStatusCode.BadRequest, "Invalid email input returns 400.");
             var weakPassword = new string('a', 16);
-            using var weak = await client.PostAsJsonAsync("api/v1/auth/register",
+            using var weak = await PostProtectedAsync(client, "api/v1/auth/register",
                 new { email = NewEmail(), password = weakPassword, confirmPassword = weakPassword });
             Assert(weak.StatusCode == HttpStatusCode.BadRequest, "Identity password strength rules return 400.");
-            using var mismatch = await client.PostAsJsonAsync("api/v1/auth/register",
+            using var mismatch = await PostProtectedAsync(client, "api/v1/auth/register",
                 new { email = NewEmail(), password, confirmPassword = password + "x" });
             Assert(mismatch.StatusCode == HttpStatusCode.BadRequest, "Password confirmation mismatch returns 400.");
             Assert(await database.Users.CountAsync() == 1, "Invalid registration requests persist no accounts.");
-            using var rateLimited = await client.PostAsJsonAsync("API/V1/AUTH/REGISTER/", registration);
+            using var rateLimited = await PostProtectedAsync(client, "API/V1/AUTH/REGISTER/", registration);
             Assert(rateLimited.StatusCode == HttpStatusCode.TooManyRequests
                 && rateLimited.Headers.RetryAfter is not null, "Registration enforces its five-per-minute IP limit even with route casing changes.");
 
-            using var unknownResend = await client.PostAsJsonAsync("api/v1/auth/resend-confirmation", new { email = NewEmail() });
+            using var unknownResend = await PostProtectedAsync(client, "api/v1/auth/resend-confirmation", new { email = NewEmail() });
             Assert(unknownResend.StatusCode == HttpStatusCode.Accepted
                 && await unknownResend.Content.ReadAsStringAsync() == acceptedBody,
                 "Unknown-email resend preserves the generic response.");
             await Task.Delay(TimeSpan.FromMilliseconds(1200));
-            using var resend = await client.PostAsJsonAsync("api/v1/auth/resend-confirmation", new { email });
+            using var resend = await PostProtectedAsync(client, "api/v1/auth/resend-confirmation", new { email });
             Assert(resend.StatusCode == HttpStatusCode.Accepted
                 && await resend.Content.ReadAsStringAsync() == acceptedBody && ReadPreviewLinks(email).Count == 2,
                 "Resend writes another preview for an unconfirmed account.");
-            using var immediateResend = await client.PostAsJsonAsync("api/v1/auth/resend-confirmation", new { email });
+            using var immediateResend = await PostProtectedAsync(client, "api/v1/auth/resend-confirmation", new { email });
             Assert(immediateResend.StatusCode == HttpStatusCode.Accepted && ReadPreviewLinks(email).Count == 2,
                 "Recipient cooldown prevents immediate repeated delivery.");
 
-            using var malformed = await client.GetAsync($"api/v1/auth/confirm-email?userId={user.Id}&token=***");
+            using var malformed = await PostProtectedAsync(client, "api/v1/auth/confirm-email",
+                new { userId = user.Id.ToString(), token = "***" });
             Assert(malformed.StatusCode == HttpStatusCode.BadRequest
                 && (await malformed.Content.ReadAsStringAsync()).Contains("Invalid or expired"),
                 "Malformed confirmation tokens return a clear 400.");
             var forgedToken = WebEncoders.Base64UrlEncode(RandomNumberGenerator.GetBytes(64));
-            using var forged = await client.GetAsync($"api/v1/auth/confirm-email?userId={user.Id}&token={forgedToken}");
+            using var forged = await PostProtectedAsync(client, "api/v1/auth/confirm-email",
+                new { userId = user.Id.ToString(), token = forgedToken });
             Assert(forged.StatusCode == HttpStatusCode.BadRequest, "Well-encoded forged tokens cannot confirm an account.");
             Assert(!await database.Users.AsNoTracking().Where(account => account.Id == user.Id)
                 .Select(account => account.EmailConfirmed).SingleAsync(), "Invalid tokens leave the account unconfirmed.");
-            using var confirmed = await client.GetAsync(originalLink);
+            await VerifyUnconfirmedLoginAsync(client, email, password);
+            using var landing = await client.GetAsync(originalLink);
+            Assert(landing.StatusCode == HttpStatusCode.OK
+                && !await database.Users.AsNoTracking().Where(account => account.Id == user.Id)
+                    .Select(account => account.EmailConfirmed).SingleAsync(),
+                "Email-link GET renders a safe form and leaves the account unconfirmed.");
+            using var confirmed = await SubmitConfirmationFormAsync(client, originalLink);
             Assert(confirmed.StatusCode == HttpStatusCode.OK
                 && confirmed.Headers.CacheControl?.NoStore == true,
                 "A valid token confirms the email and disables response caching.");
             Assert(await database.Users.AsNoTracking().Where(account => account.Id == user.Id)
                 .Select(account => account.EmailConfirmed).SingleAsync(), "Confirmation persists in PostgreSQL.");
-            using var confirmedResend = await client.PostAsJsonAsync("api/v1/auth/resend-confirmation", new { email });
+            using var confirmedResend = await PostProtectedAsync(client, "api/v1/auth/resend-confirmation", new { email });
             Assert(confirmedResend.StatusCode == HttpStatusCode.Accepted
                 && await confirmedResend.Content.ReadAsStringAsync() == acceptedBody && ReadPreviewLinks(email).Count == 2,
                 "Confirmed-account resend stays generic and sends no email.");
 
-            using var fifthResend = await client.PostAsJsonAsync("api/v1/auth/resend-confirmation", new { email = NewEmail() });
+            using var fifthResend = await PostProtectedAsync(client, "api/v1/auth/resend-confirmation", new { email = NewEmail() });
             Assert(fifthResend.StatusCode == HttpStatusCode.Accepted, "Resend accepts requests within its IP limit.");
-            using var limitedResend = await client.PostAsJsonAsync("api/v1/auth/resend-confirmation", new { email });
+            using var limitedResend = await PostProtectedAsync(client, "api/v1/auth/resend-confirmation", new { email });
             Assert(limitedResend.StatusCode == HttpStatusCode.TooManyRequests, "Resend also enforces its per-IP rate limit.");
+
+            await VerifyCookieSessionsAsync(client, database, user, email, password);
+            VerifyProductionCookieOptions();
 
             // A second instance gives expiry an actual short lifetime, without waiting 24 hours.
             var expiringApi = await StartApiAsync(testConnection, lifetime: "00:00:01");
             using var expiringClient = new HttpClient { BaseAddress = expiringApi.Address };
             var expiringEmail = NewEmail();
-            using var expiringRegistration = await expiringClient.PostAsJsonAsync("api/v1/auth/register",
+            using var expiringRegistration = await PostProtectedAsync(expiringClient, "api/v1/auth/register",
                 new { email = expiringEmail, password, confirmPassword = password });
             Assert(expiringRegistration.StatusCode == HttpStatusCode.Accepted, "Expiry test account is created.");
             var expiringLink = ReadPreviewLinks(expiringEmail).Single();
             await Task.Delay(TimeSpan.FromMilliseconds(1500));
-            using var expired = await expiringClient.GetAsync(expiringLink);
+            var expiredQuery = QueryHelpers.ParseQuery(new Uri(expiringLink).Query);
+            using var expired = await PostProtectedAsync(expiringClient, "api/v1/auth/confirm-email",
+                new { userId = expiredQuery["userId"].ToString(), token = expiredQuery["token"].ToString() });
             Assert(expired.StatusCode == HttpStatusCode.BadRequest
                 && (await expired.Content.ReadAsStringAsync()).Contains("Invalid or expired"),
                 "Identity rejects an expired confirmation token with a clear 400.");
@@ -166,7 +188,7 @@ internal static class RegistrationFlowChecks
             // Concurrent requests exercise the database uniqueness race rather than just a precheck.
             var raceEmail = NewEmail();
             var raceResponses = await Task.WhenAll(Enumerable.Range(0, 2).Select(_ =>
-                expiringClient.PostAsJsonAsync("api/v1/auth/register",
+                PostProtectedAsync(expiringClient, "api/v1/auth/register",
                     new { email = raceEmail, password, confirmPassword = password })));
             foreach (var response in raceResponses)
             {
@@ -180,7 +202,7 @@ internal static class RegistrationFlowChecks
             Assert(await database.Users.CountAsync(account => account.Email == raceEmail) == 1,
                 "Concurrent duplicate registration creates exactly one account.");
 
-            using var caseDuplicate = await expiringClient.PostAsJsonAsync("api/v1/auth/register",
+            using var caseDuplicate = await PostProtectedAsync(expiringClient, "api/v1/auth/register",
                 new { email = email.ToUpperInvariant(), password, confirmPassword = password });
             Assert(caseDuplicate.StatusCode == HttpStatusCode.Accepted
                 && await caseDuplicate.Content.ReadAsStringAsync() == acceptedBody
@@ -191,7 +213,7 @@ internal static class RegistrationFlowChecks
                 "No production email sender is configured", "Production refuses to start without a real email sender.");
             await AssertStartupFailureAsync(testConnection, "Development", "not-an-absolute-url",
                 "Accounts:ApplicationUrl", "Invalid application URLs fail startup validation.");
-            Console.WriteLine("All registration and email-confirmation flow checks passed.");
+            Console.WriteLine("All registration, confirmation, cookie-session, and CSRF flow checks passed.");
             return 0;
         }
         catch (Exception exception)
@@ -243,12 +265,155 @@ internal static class RegistrationFlowChecks
         }
     }
 
+    /// <summary>Pairs the HttpOnly CSRF cookie with a fresh token for the client's current identity.</summary>
+    private static async Task<string> GetCsrfTokenAsync(HttpClient client)
+    {
+        using var response = await client.GetAsync("api/v1/auth/csrf");
+        if (!response.IsSuccessStatusCode) throw new FlowCheckException($"CSRF bootstrap must succeed (received {(int)response.StatusCode}).");
+        using var json = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        return json.RootElement.GetProperty("requestToken").GetString()!;
+    }
+
+    /// <summary>Sends a real protected JSON mutation; no controller validation is bypassed for tests.</summary>
+    private static async Task<HttpResponseMessage> PostProtectedAsync(HttpClient client, string path, object body)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Post, path) { Content = JsonContent.Create(body) };
+        request.Headers.Add(BrowserAuthenticationConfiguration.CsrfHeaderName, await GetCsrfTokenAsync(client));
+        // Mimic same-origin browser fetch headers, including when Next.js forwards to a different backend port.
+        request.Headers.Add("Origin", client.BaseAddress!.GetLeftPart(UriPartial.Authority));
+        request.Headers.Add("Sec-Fetch-Site", "same-origin");
+        return await client.SendAsync(request);
+    }
+
+    /// <summary>Follows the email-link form using its own hidden antiforgery token and cookie pair.</summary>
+    private static async Task<HttpResponseMessage> SubmitConfirmationFormAsync(HttpClient client, string link)
+    {
+        var html = await client.GetStringAsync(link);
+        var fields = Regex.Matches(html, "<input type=\"hidden\" name=\"([^\"]+)\" value=\"([^\"]*)\">")
+            .Select(match => new KeyValuePair<string, string>(WebUtility.HtmlDecode(match.Groups[1].Value),
+                WebUtility.HtmlDecode(match.Groups[2].Value))).ToArray();
+        using var content = new FormUrlEncodedContent(fields);
+        return await client.PostAsync("api/v1/auth/confirm-email", content);
+    }
+
+    /// <summary>Checks anonymous authorization and confirmed-email enforcement before confirmation occurs.</summary>
+    private static async Task VerifyUnconfirmedLoginAsync(HttpClient client, string email, string password)
+    {
+        using var anonymous = await client.GetAsync("api/v1/auth/me");
+        Assert(anonymous.StatusCode == HttpStatusCode.Unauthorized && anonymous.Headers.Location is null,
+            "Anonymous current-user access returns 401 rather than a login redirect.");
+        using var unconfirmed = await PostProtectedAsync(client, "api/v1/auth/login", new { email, password });
+        Assert(unconfirmed.StatusCode == HttpStatusCode.Unauthorized && !unconfirmed.Headers.Contains("Set-Cookie"),
+            "Unconfirmed accounts cannot sign in or receive an authentication cookie.");
+    }
+
+    /// <summary>Verifies cookie sessions, CSRF enforcement, safe projections, lockout, and rate limiting through HTTP.</summary>
+    private static async Task VerifyCookieSessionsAsync(HttpClient client, DocuMindDbContext database,
+        ApplicationUser user, string email, string password)
+    {
+        // Raw requests deliberately omit the required header to prove validation is enforced.
+        using var missingLogin = await client.PostAsJsonAsync("api/v1/auth/login", new { email, password });
+        Assert(missingLogin.StatusCode == HttpStatusCode.BadRequest, "Login without a CSRF token is rejected.");
+        using var unknown = await PostProtectedAsync(client, "api/v1/auth/login", new { email = NewEmail(), password });
+        var genericFailure = await unknown.Content.ReadAsStringAsync();
+        var incorrectPassword = password + "wrong";
+        using var incorrect = await PostProtectedAsync(client, "api/v1/auth/login", new { email, password = incorrectPassword });
+        Assert(unknown.StatusCode == HttpStatusCode.Unauthorized && incorrect.StatusCode == HttpStatusCode.Unauthorized
+            && await incorrect.Content.ReadAsStringAsync() == genericFailure,
+            "Unknown accounts and incorrect passwords share one generic authentication failure.");
+        Assert(await database.Users.AsNoTracking().Where(account => account.Id == user.Id)
+            .Select(account => account.AccessFailedCount).SingleAsync() == 1,
+            "An incorrect password counts toward the configured lockout policy.");
+        var anonymousToken = await GetCsrfTokenAsync(client);
+        using var signedIn = await PostProtectedAsync(client, "api/v1/auth/login", new { email, password, rememberMe = true });
+        Assert(signedIn.StatusCode == HttpStatusCode.NoContent, "A confirmed account signs in successfully.");
+        var authCookie = signedIn.Headers.GetValues("Set-Cookie").Single(value => value.StartsWith("DocuMind.Auth=", StringComparison.Ordinal));
+        Assert(authCookie.Contains("httponly", StringComparison.OrdinalIgnoreCase)
+            && authCookie.Contains("samesite=lax", StringComparison.OrdinalIgnoreCase)
+            && authCookie.Contains("expires=", StringComparison.OrdinalIgnoreCase),
+            "Login issues an HttpOnly SameSite=Lax persistent cookie when requested.");
+        using var me = await client.GetAsync("api/v1/auth/me");
+        using var account = JsonDocument.Parse(await me.Content.ReadAsStringAsync());
+        var fields = account.RootElement.EnumerateObject().Select(property => property.Name).Order().ToArray();
+        Assert(me.StatusCode == HttpStatusCode.OK && account.RootElement.GetProperty("id").GetGuid() == user.Id
+            && fields.SequenceEqual(new[] { "createdAt", "email", "emailConfirmed", "id" }),
+            "Current-user returns only the authenticated account's four safe fields.");
+        Assert(me.Headers.CacheControl?.NoStore == true, "Current-user responses are not cached.");
+        using var persisted = await client.GetAsync("api/v1/auth/me");
+        Assert(persisted.StatusCode == HttpStatusCode.OK, "The cookie authenticates subsequent requests.");
+        using var rawLogout = await client.PostAsync("api/v1/auth/logout", null);
+        Assert(rawLogout.StatusCode == HttpStatusCode.BadRequest, "Authenticated logout without a CSRF token is rejected.");
+        using var invalidRequest = new HttpRequestMessage(HttpMethod.Post, "api/v1/auth/logout");
+        invalidRequest.Headers.Add(BrowserAuthenticationConfiguration.CsrfHeaderName, "forged-token");
+        using var invalidLogout = await client.SendAsync(invalidRequest);
+        Assert(invalidLogout.StatusCode == HttpStatusCode.BadRequest, "A forged CSRF token is rejected.");
+        using var staleRequest = new HttpRequestMessage(HttpMethod.Post, "api/v1/auth/logout");
+        staleRequest.Headers.Add(BrowserAuthenticationConfiguration.CsrfHeaderName, anonymousToken);
+        using var staleLogout = await client.SendAsync(staleRequest);
+        Assert(staleLogout.StatusCode == HttpStatusCode.BadRequest, "A pre-login CSRF token cannot mutate a signed-in session.");
+        using var stillSignedIn = await client.GetAsync("api/v1/auth/me");
+        Assert(stillSignedIn.StatusCode == HttpStatusCode.OK, "Rejected logout attempts preserve the session.");
+        using var loggedOut = await PostProtectedAsync(client, "api/v1/auth/logout", new { });
+        Assert(loggedOut.StatusCode == HttpStatusCode.NoContent, "Protected logout succeeds.");
+        using var afterLogout = await client.GetAsync("api/v1/auth/me");
+        Assert(afterLogout.StatusCode == HttpStatusCode.Unauthorized, "Logout clears browser authentication.");
+
+        // Start fresh rate-limit counters so five wrong passwords can be tested without waiting a minute.
+        var separateApi = await StartApiAsync(database.Database.GetConnectionString()!);
+        using var lockoutClient = new HttpClient { BaseAddress = separateApi.Address };
+        using var unprotectedRegister = await lockoutClient.PostAsJsonAsync("api/v1/auth/register",
+            new { email = NewEmail(), password, confirmPassword = password });
+        Assert(unprotectedRegister.StatusCode == HttpStatusCode.BadRequest, "Registration requires CSRF even for anonymous callers.");
+        using var unprotectedResend = await lockoutClient.PostAsJsonAsync("api/v1/auth/resend-confirmation", new { email });
+        Assert(unprotectedResend.StatusCode == HttpStatusCode.BadRequest, "Resend requires CSRF protection.");
+        using var unprotectedConfirm = await lockoutClient.PostAsJsonAsync("api/v1/auth/confirm-email",
+            new { userId = user.Id.ToString(), token = "invalid" });
+        Assert(unprotectedConfirm.StatusCode == HttpStatusCode.BadRequest, "Confirmation mutations require CSRF protection.");
+        for (var attempt = 0; attempt < 5; attempt++)
+        {
+            using var failure = await PostProtectedAsync(lockoutClient, "api/v1/auth/login", new { email, password = incorrectPassword });
+            Assert(failure.StatusCode == HttpStatusCode.Unauthorized
+                && await failure.Content.ReadAsStringAsync() == genericFailure, "Failed passwords keep the generic 401 response.");
+        }
+        var lockoutEnd = await database.Users.AsNoTracking().Where(account => account.Id == user.Id)
+            .Select(account => account.LockoutEnd).SingleAsync();
+        Assert(lockoutEnd > DateTimeOffset.UtcNow, "Five failed passwords trigger the existing temporary lockout.");
+        using var locked = await PostProtectedAsync(lockoutClient, "api/v1/auth/login", new { email, password });
+        Assert(locked.StatusCode == HttpStatusCode.Unauthorized && await locked.Content.ReadAsStringAsync() == genericFailure,
+            "Locked accounts reject correct passwords without disclosing the reason.");
+        for (var attempt = 0; attempt < 4; attempt++)
+        {
+            using var ignored = await PostProtectedAsync(lockoutClient, "api/v1/auth/login", new { email, password });
+        }
+        using var limited = await PostProtectedAsync(lockoutClient, "API/V1/AUTH/LOGIN/", new { email, password });
+        Assert(limited.StatusCode == HttpStatusCode.TooManyRequests && limited.Headers.RetryAfter is not null,
+            "Login rate limits cannot be bypassed through route casing.");
+    }
+
+    /// <summary>Inspects production option registrations without enabling a fake production mail provider.</summary>
+    private static void VerifyProductionCookieOptions()
+    {
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddDocuMindBrowserAuthentication(new HostingEnvironment { EnvironmentName = Environments.Production });
+        using var provider = services.BuildServiceProvider();
+        var auth = provider.GetRequiredService<IOptionsMonitor<CookieAuthenticationOptions>>().Get(IdentityConstants.ApplicationScheme);
+        var csrf = provider.GetRequiredService<IOptions<AntiforgeryOptions>>().Value;
+        Assert(auth.Cookie.HttpOnly && auth.Cookie.SecurePolicy == Microsoft.AspNetCore.Http.CookieSecurePolicy.Always
+            && csrf.Cookie.HttpOnly && csrf.Cookie.SecurePolicy == Microsoft.AspNetCore.Http.CookieSecurePolicy.Always,
+            "Production authentication and antiforgery cookies are HttpOnly and HTTPS-only.");
+    }
+
     /// <summary>Starts a real API process with test-only configuration and waits for readiness.</summary>
     private static async Task<(Process Process, Uri Address)> StartApiAsync(string connectionString,
-        string lifetime = "1.00:00:00")
+        string lifetime = "1.00:00:00", bool useFrontend = false)
     {
-        var address = new Uri($"http://127.0.0.1:{FindAvailablePort()}/");
-        var (process, _) = LaunchApi(connectionString, "Development", address.ToString(), lifetime);
+        var address = new Uri(useFrontend
+            ? Environment.GetEnvironmentVariable("DOCUMIND_FLOW_API_ORIGIN") ?? $"http://127.0.0.1:{FindAvailablePort()}/"
+            : $"http://127.0.0.1:{FindAvailablePort()}/");
+        var publicAddress = useFrontend
+            ? new Uri(Environment.GetEnvironmentVariable("DOCUMIND_FLOW_FRONTEND_ORIGIN") ?? address.ToString()) : address;
+        var (process, _) = LaunchApi(connectionString, "Development", publicAddress.ToString(), lifetime, address.ToString());
         using var client = new HttpClient { BaseAddress = address, Timeout = TimeSpan.FromSeconds(2) };
         for (var attempt = 0; attempt < 80; attempt++)
         {
@@ -256,7 +421,7 @@ internal static class RegistrationFlowChecks
             try
             {
                 using var readiness = await client.GetAsync("api/v1/health/ready");
-                if (readiness.IsSuccessStatusCode) return (process, address);
+                if (readiness.IsSuccessStatusCode) return (process, publicAddress);
             }
             catch (HttpRequestException) { }
             catch (TaskCanceledException) { }
@@ -278,7 +443,7 @@ internal static class RegistrationFlowChecks
 
     /// <summary>Configures each child independently; passwords are passed in environment variables only.</summary>
     private static (Process Process, System.Text.StringBuilder Output) LaunchApi(string connectionString,
-        string environment, string applicationUrl, string lifetime)
+        string environment, string applicationUrl, string lifetime, string? listenUrl = null)
     {
         var apiDirectory = Path.Combine(repositoryRoot, "backend", "src", "DocuMind.Api");
         var start = new ProcessStartInfo("dotnet")
@@ -295,6 +460,7 @@ internal static class RegistrationFlowChecks
             start.ArgumentList[^1] = applicationUrl;
         }
 
+        if (listenUrl is not null) start.ArgumentList[^1] = listenUrl;
         start.Environment["ConnectionStrings__DocuMind"] = connectionString;
         start.Environment["ASPNETCORE_ENVIRONMENT"] = environment;
         start.Environment["DOTNET_ENVIRONMENT"] = environment;

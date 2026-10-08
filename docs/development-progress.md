@@ -1,20 +1,22 @@
 # DocuMind development progress
 
-Verified on **2026-10-08 (Europe/Berlin)** against the current working tree. Unrelated pre-existing edits remain outside the registration commit. Required Identity/cookie startup wiring was still local and is included as a prerequisite so the committed registration flow works from a fresh checkout. No AGENTS.md instructions were found in the repository or its ancestor directories.
+Verified on **2026-10-08 (Europe/Berlin)** for the cookie-authentication step. Unrelated pre-existing comment edits are preserved outside this commit. Registration and Identity wiring were already committed; this step builds on them. No AGENTS.md instructions were found in the repository or its ancestor directories.
 
 ## Actual status
 
-DocuMind has verified registration and email confirmation using Identity, a Development email-preview sender, and a working database foundation. Login and document Q&A remain unimplemented. Registration and confirmation were exercised through the real API against an isolated PostgreSQL database; compilation alone was not treated as proof.
+DocuMind has verified Identity registration, email confirmation, cookie login/logout, a protected current-user endpoint, and CSRF protection. The Next.js development proxy and browser request helper establish one application origin. Real HTTP checks ran against isolated PostgreSQL databases, including the primary account/session flow through Next.js. Document Q&A and account UI remain unimplemented.
 
 ### Complete and verified
 
 - **Solution structure:** all four application projects and the new executable account-flow checker target net10.0 and build. API references Services and Data; Services references Data; Worker references Services and Data. These references compile, but referencing a project does not automatically register its services.
 - **PostgreSQL and pgvector:** a read-only query through the existing local connection verified PostgreSQL **17.11** and vector extension **0.8.7**. The API readiness route returned **HTTP 200, Healthy**.
 - **Identity schema:** the live database contains AspNetUsers, AspNetRoles, AspNetUserClaims, AspNetRoleClaims, AspNetUserLogins, AspNetUserRoles, and AspNetUserTokens. Migration history contains **20261007065231_InitialIdentity**. EF reports no pending model changes. No migration was applied or rolled back against the existing application database during this step. The flow checker applied InitialIdentity only to its newly created temporary database.
-- **API scaffold:** controllers are mapped, development OpenAPI returns HTTP 200, and the sample weather endpoint returns five forecasts. The account controller now exposes registration, confirmation, and resend routes alongside /WeatherForecast. The readiness route is mapped separately.
+- **API scaffold:** controllers are mapped, development OpenAPI returns HTTP 200, and the sample weather endpoint returns five forecasts. The account controller exposes registration, confirmation, resend, csrf, login, logout, and me routes alongside /WeatherForecast. The readiness route is mapped separately.
 - **Registration and confirmation:** AccountService in Services uses UserManager for account creation, password validation/hashing, and confirmation. HTTP checks verified unconfirmed accounts, valid confirmation and stored state, invalid input, weak passwords, matching-password validation, generic duplicate responses, and malformed/forged/expired tokens. Registration does not issue a sign-in cookie.
 - **Resend and privacy:** valid registration and resend requests return the same generic 202 message. Unknown and confirmed addresses disclose no account state. The checks verified actual previews, recipient cooldown, per-IP 429 responses (including route casing), concurrent duplicates, and unchanged account counts.
 - **Email delivery and link configuration:** Development-only JSON previews go to ignored backend/storage/email-previews. Trusted configured application URLs, URL-safe token encoding, token expiration, and production startup refusal without a real sender were tested. No credentials or tokens were committed.
+- **Cookie sessions and CSRF:** confirmed-email enforcement, generic authentication failures, Identity lockout counting, successful login, persistent HttpOnly cookies, subsequent authenticated requests, safe current-user fields, logout, and anonymous 401 responses passed real HTTP checks. Missing, forged, and pre-login CSRF tokens were rejected. Email-link GET remains safe; confirmation is a protected POST.
+- **Same-origin development:** Next.js rewrites /api/* to the backend during development. Accounts:ApplicationUrl defaults to localhost:3000. The client apiFetch helper obtains fresh CSRF tokens and sends cookies through relative /api/ requests. The main account/session checks passed through the real rewrite.
 - **Worker scaffold:** the hosted worker starts and logs its heartbeat. Its current purpose is demonstration background execution, not ingestion.
 - **Frontend scaffold:** Next.js production compilation, TypeScript validation, prerendering, and full ESLint pass. The production home page returns HTTP 200 and renders the starter content.
 - **Secret-file exclusion:** deployment/.env and .env.bak are ignored and untracked. Compose sources its password from POSTGRES_PASSWORD rather than a literal. API settings contain no database connection string; the API has a user-secrets identifier. Existing secret values were never printed or committed.
@@ -22,19 +24,19 @@ DocuMind has verified registration and email confirmation using Identity, a Deve
 ### Implemented foundation, incomplete behavior
 
 - **Identity configuration:** ApplicationUser inherits IdentityUser<Guid>, initializes its ID, and stores a UTC CreatedAt timestamp. DocuMindDbContext inherits IdentityDbContext with Guid user/role keys. Program.cs registers Identity, EF stores, and default token providers.
-- **Account policies:** unique email, passwords of at least 12 characters with uppercase/lowercase/digit/symbol requirements, five failed attempts followed by a five-minute lockout, and confirmed email before sign-in are configured. Registration validation, duplicate handling, and unconfirmed account creation were exercised through the API. Lockout and actual sign-in enforcement remain untested until login exists; future login code must opt into failure counting.
-- **Cookie configuration:** DocuMind.Auth is HttpOnly, SameSite=Lax, uses HTTPS outside Development, and has a 60-minute ticket with sliding expiration. Authentication precedes authorization; redirect handlers set 401/403. Cookie issuance, persistence, expiry, and protected endpoint behavior are not end-to-end verified because sign-in and protected application routes do not exist.
+- **Account policies:** unique email, passwords of at least 12 characters with uppercase/lowercase/digit/symbol requirements, five failed attempts followed by a five-minute lockout, and confirmed email before sign-in are configured. Registration validation, duplicate handling, and unconfirmed account creation were exercised through the API. Login now opts into failure counting through SignInManager; unconfirmed sign-in rejection and five-attempt lockout were verified.
+- **Cookie configuration:** DocuMind.Auth is HttpOnly, SameSite=Lax, uses HTTPS outside Development, and has a 60-minute ticket with sliding expiration. Authentication precedes authorization; redirect handlers set 401/403. Cookie issuance, persistence across HTTP requests, logout, and protected current-user behavior are verified. HTTPS-only production auth/antiforgery cookie options were inspected through DI. A real production TLS session, 60-minute expiry/sliding-renewal wait, and restart persistence were not tested.
 - **Database readiness:** AddDbContextCheck tests connectivity. It does not verify every table or extension; the separate schema query supplied that evidence for this inspection.
 - **pgvector integration:** the extension exists and is declared in the EF model. There are no document/chunk entities, embedding columns, vector type mapping, similarity queries, or vector indexes yet.
 - **Docker configuration:** Compose validates and defines only PostgreSQL using pgvector/pgvector:pg17, loopback port 5433 mapped to container port 5432, a named postgres_data volume, and a pg_isready health check. API, worker, and frontend are not containerized here. Live Docker container health and volume attachment could not be inspected because daemon access is denied in this session; direct database connectivity still succeeded.
 
 ### Missing from this checkout
 
-- **Account lifecycle:** login, logout, current-user endpoint, password reset, and their runtime checks remain absent. Confirmation and Development delivery now work; a real production email provider remains unimplemented, and production startup intentionally fails without one.
-- **Frontend integration:** the home page, metadata, and navigation remain Next.js starter content. There are no registration/login forms, document upload/list views, chat UI, or API integration.
-- **Browser authentication integration:** no explicit frontend proxy or CORS setup, credentialed API calls, or CSRF protection is implemented. Choose the browser/API origin strategy before integrating cookie-protected state-changing requests.
+- **Account lifecycle:** password reset, account-management UI, and their runtime checks remain absent. Login/logout/current-user, confirmation, and Development delivery now work. A real production email provider remains unimplemented, and production startup intentionally fails without one.
+- **Frontend integration:** the home page, metadata, and navigation remain Next.js starter content. There are no registration/login forms, document upload/list views, or chat UI. The same-origin proxy and API request helper exist but are not yet used by account UI.
+- **Production browser deployment:** implement same-origin reverse-proxy routing, trusted forwarded headers, real HTTPS/mail delivery, shared rate limiting, and persistent protected Data Protection keys before deployment. Browser UI automation remains absent. The development origin strategy and CSRF flow are implemented.
 - **RAG pipeline:** document storage/upload, text extraction, chunking, queueing, embedding generation, vector retrieval, answer generation, citations, and per-user document ownership checks are absent.
-- **Automated testing:** backend/tests/DocuMind.Auth.FlowChecks now provides repeatable HTTP/PostgreSQL integration verification with no additional test packages. It is an executable checker run with dotnet run, not a dotnet test target. Broader authentication/RAG tests and a frontend test suite remain missing.
+- **Automated testing:** backend/tests/DocuMind.Auth.FlowChecks now provides repeatable HTTP/PostgreSQL integration verification with no additional test packages. It is an executable checker run with dotnet run, not a dotnet test target. Session/CSRF/lockout checks are included; broader RAG tests and a frontend UI test suite remain missing.
 
 ## Package and project inspection
 
@@ -47,19 +49,19 @@ DocuMind has verified registration and email confirmation using Identity, a Deve
 - Frontend manifest and lockfile agree on Next.js/eslint-config-next **16.4.0** and React/React DOM **19.3.0**. The lockfile resolves Tailwind and @tailwindcss/turbopack **4.3.3**, TypeScript **5.9.3**, and ESLint **9.39.5**. Tailwind CSS uses the configured Turbopack loader and builds successfully.
 - Resolved backend assets were inspected as well as declared versions. Successful builds demonstrate compatibility in this installed environment; the solution restore also passed for the new checker in this step. A fresh frontend install and a vulnerability audit were not performed.
 
-Official references consulted: [Npgsql EF Core 10 release notes](https://www.npgsql.org/efcore/release-notes/10.0.html), [ASP.NET Core Identity documentation](https://learn.microsoft.com/en-us/aspnet/core/security/authentication/identity?view=aspnetcore-10.0), and [Next.js font documentation](https://nextjs.org/docs/app/getting-started/fonts).
+Official references consulted: [Npgsql EF Core 10 release notes](https://www.npgsql.org/efcore/release-notes/10.0.html), [ASP.NET Core Identity documentation](https://learn.microsoft.com/en-us/aspnet/core/security/authentication/identity?view=aspnetcore-10.0), [Next.js font documentation](https://nextjs.org/docs/app/getting-started/fonts), [SignInManager password sign-in](https://learn.microsoft.com/en-us/dotnet/api/microsoft.aspnetcore.identity.signinmanager-1.passwordsigninasync?view=aspnetcore-10.0), [MVC antiforgery](https://learn.microsoft.com/en-us/aspnet/core/security/anti-request-forgery?view=aspnetcore-10.0), and [Next.js rewrites](https://nextjs.org/docs/app/api-reference/config/next-config-js/rewrites).
 
 ## Checks and limitations
 
-Passed during the registration step (frontend, worker, Docker, and original schema evidence below are retained from the preceding status inspection and were not all rerun):
+Passed during this cookie-authentication step:
 
-- Backend solution restore and build: **five projects, zero warnings, zero errors**.
-- Real registration/confirmation checks on an isolated PostgreSQL database, including hashing, duplicate/concurrent requests, validation, rate limits, resend/cooldown, valid/malformed/forged/expired tokens, and startup guards. The generated database and preview files were cleaned up.
-- Frontend production build, including its TypeScript step, and full ESLint.
-- Production frontend HTTP smoke check and worker heartbeat smoke check.
-- Compose config --quiet validation via the installed Docker Compose executable (**v2.40.3-desktop.1**).
-- API readiness, OpenAPI, and sample controller HTTP smoke checks.
-- Read-only PostgreSQL extension/table/migration inspection, EF migrations list, and EF has-pending-model-changes.
+- Backend solution build: **five projects, zero warnings, zero errors**; no dependency/package version change.
+- Direct isolated HTTP/PostgreSQL flow checks passed after fixing MVC antiforgery filter service registration.
+- Final same-origin run: **62 assertions passed**, with primary registration/confirmation/login/session/logout/CSRF requests sent through a task-owned Next.js development server on unused loopback ports. Auxiliary expiry, lockout, concurrency, and startup guards used separate direct API processes. Generated databases and test previews were cleaned up; existing application data and unrelated previews were preserved.
+- Frontend production build, TypeScript validation, prerendering, and full ESLint passed.
+- Production auth and antiforgery options were verified as HttpOnly/Secure Always using dependency injection. Production startup still rejects a missing real email sender.
+
+Historical evidence retained from the previous status/registration steps, not all rerun here: solution restore; live PostgreSQL/pgvector/table/migration inspection and EF pending-model check; development OpenAPI/sample weather; worker heartbeat; production frontend HTTP smoke; Compose config validation using v2.40.3-desktop.1. No Docker daemon or production TLS/email-provider verification was added.
 
 Environment limitations and exact scope of runtime evidence:
 
@@ -67,8 +69,8 @@ Environment limitations and exact scope of runtime evidence:
 - For the successful API and database checks, the existing ignored deployment password was passed only through a temporary process environment, using the configured loopback database port. The probe disabled Windows EventLog logging and used temporary local application-data storage because this restricted session cannot write to the usual locations. It used API port 15185. These overrides were not saved to source or user settings and do not verify the user's normal launch configuration or durable cookie key storage.
 - The usual docker compose command could not discover its plugin while Docker's user configuration was inaccessible. Calling the installed plugin directly validated the file. Container inspection still failed with Docker named-pipe access denied. No containers or volumes were recreated or removed.
 - EF emitted a warning that no IEntityTypeConfiguration implementations exist in Data. This matches the current scaffold and did not prevent the checks.
-- The previous status inspection used an isolated schema verifier after a restricted-runner NuGet failure. This registration step used the authorized SDK runner to restore and build the new flow checker successfully. No production credential or preview email was added to source.
-- Registration and confirmation checks created accounts only in a uniquely named temporary database, which was removed afterward. The existing application database and unrelated previews were preserved. Login, authenticated cookies, document ownership, and RAG remain unverified because those flows are missing.
+- The previous status inspection used an isolated schema verifier after a restricted-runner NuGet failure. The registration step used the authorized SDK runner to restore and build the new flow checker successfully. No production credential or preview email was added to source.
+- Account-flow checks created accounts only in uniquely named temporary databases, which were removed afterward. Primary sessions and CSRF ran through the real Next.js development proxy; no browser UI automation was performed. The existing application database and unrelated previews were preserved. Document ownership and RAG remain unverified because those features are missing.
 
 ## Previous frontend build fix
 
@@ -78,17 +80,17 @@ The frontend initially failed production compilation when next/font/google could
 
 AuthController handles HTTP behavior and delegates to IAccountService. Services contains account options, a dedicated Identity confirmation-token provider, and IEmailSender with a guarded Development preview implementation. API configuration validates the trusted link URL, sets rate limits, and resolves delivery at startup. The existing password/unique-email policies and database schema were preserved. Default confirmation lifetime is 24 hours; recipient resend cooldown is 60 seconds.
 
-Delivery is currently synchronous/best-effort with private error logging; a durable outbox is not implemented. Rate limits and cooldowns are local to one process. A deployment with multiple instances needs shared limiting and persisted/shared Data Protection keys. Confirmation is a token-bearing GET link returning JSON; no frontend confirmation screen or automatic sign-in has been added.
+Delivery is currently synchronous/best-effort with private error logging; a durable outbox is not implemented. Rate limits and cooldowns are local to one process. A deployment with multiple instances needs shared limiting and persisted/shared Data Protection keys. Confirmation links now open a safe GET form; a CSRF-protected JSON/form POST validates the token and changes account state. Login/logout delegate to IIdentitySessionService. The current-user response is an explicit four-field projection. No automatic sign-in or styled Next.js account screen has been added.
 
-See [registration-testing.md](registration-testing.md) for commented PowerShell examples and the repeatable integration checker. The checker requires CREATE DATABASE permission and uses no test accounts in the existing application database.
+See [cookie-authentication-testing.md](cookie-authentication-testing.md) for same-origin setup, endpoint behavior, commented PowerShell session examples, and direct/proxy integration-check commands. [registration-testing.md](registration-testing.md) is updated for the protected confirmation POST. The checker requires CREATE DATABASE permission and uses no test accounts in the existing application database.
 
 ## Ordered implementation checklist
 
 1. Verify the normal local API connection and application URL through local settings/user secrets; reproduce readiness and inspect Docker health from an authorized terminal while keeping the existing volume.
 2. **Completed:** controller-based registration, confirmation, resend, ignored Development previews, validation/privacy/rate limits, and real HTTP/PostgreSQL verification.
-3. Implement login, logout, current-user, and password-reset flows. Test confirmed-email enforcement, lockout, cookies, 401/403, and CSRF protection before integrating browser sign-in.
+3. **Completed:** cookie login/logout/current-user, confirmed-email enforcement, lockout, generic failures, rate limits, CSRF, and same-origin development proxy verification. Build registration/login/resend/confirmation UI using apiFetch and add browser tests next.
 4. Implement a real email provider with secret configuration and reliable delivery; validate persistent/shared Data Protection and multi-instance rate limiting before production deployment.
-5. Decide the frontend/API origin strategy and build registration/login/confirmation UI with credentialed requests and browser tests.
+5. Implement password-reset/account-management flows with privacy, CSRF, and rate-limit checks; verify expiry, key persistence, and production HTTPS behavior.
 6. Add document ownership/upload/storage and metadata migrations, followed by worker queueing, extraction, chunking, embeddings, vector retrieval, and grounded answers with citations. Test isolation and failures throughout.
 
 ## Reproduce the build checks

@@ -26,7 +26,7 @@ public sealed class ResendConfirmationRequest
     public string Email { get; init; } = string.Empty;
 }
 
-/// <summary>Bounds the confirmation query before handing token validation to Identity.</summary>
+/// <summary>Bounds the confirmation query/body before handing token validation to Identity.</summary>
 public sealed class ConfirmEmailRequest
 {
     /// <summary>The user ID carried by the protected email link, not a login credential.</summary>
@@ -36,4 +36,19 @@ public sealed class ConfirmEmailRequest
     /// <summary>A URL-safe token; never include this value in application logs.</summary>
     [Required, StringLength(4096)]
     public string Token { get; init; } = string.Empty;
+}
+
+/// <summary>Bounds login input without rejecting short wrong passwords before Identity can count them.</summary>
+public sealed class LoginRequest
+{
+    /// <summary>The sign-in email; authentication failures do not disclose whether it exists.</summary>
+    [Required, EmailAddress, StringLength(254)]
+    public string Email { get; init; } = string.Empty;
+
+    /// <summary>The attempted password; Identity verifies the stored hash.</summary>
+    [Required, StringLength(128)]
+    public string Password { get; init; } = string.Empty;
+
+    /// <summary>Opts into a persistent browser cookie; false creates a browser-session cookie.</summary>
+    public bool RememberMe { get; init; }
 }
