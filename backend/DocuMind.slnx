@@ -8,5 +8,7 @@
   <!-- Executable checks exercise real HTTP and PostgreSQL behavior in an isolated test database. -->
   <Folder Name="/tests/">
     <Project Path="tests/DocuMind.Auth.FlowChecks/DocuMind.Auth.FlowChecks.csproj" />
+    <!-- Unit tests isolate custom decisions; they do not replace the real HTTP/database checks. -->
+    <Project Path="tests/DocuMind.UnitTests/DocuMind.UnitTests.csproj" />
   </Folder>
 </Solution>

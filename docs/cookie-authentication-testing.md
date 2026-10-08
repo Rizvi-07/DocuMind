@@ -146,6 +146,10 @@ Remove-Variable password, registrationJson, loginJson, confirmationJson, query, 
 
 To test the email-link experience in a browser, open your test preview link privately at localhost:3000 and submit the generated form instead of sending the JSON confirmation POST. Don't paste bearer links into issues or tracked files. Wait for Retry-After if you exhaust a request budget.
 
+## Unit tests
+
+The backend now also has 109 isolated xUnit cases, and the frontend helper has 18 Node tests. Run dotnet test backend/DocuMind.slnx from the repository root and npm test from frontend. These need no running database, API, or Next.js server; they complement the real cookie/CSRF HTTP checks below. See [unit-testing.md](unit-testing.md) for commented commands, test logic, and exact coverage limits.
+
 ## Repeatable integration checks
 
 The console checker launches real API processes, applies InitialIdentity to its own newly generated database, verifies stored account state and cookie sessions, then removes only its generated database/previews/processes. Existing application data is preserved. It requires CREATE DATABASE permission. It is run with dotnet run, not dotnet test.

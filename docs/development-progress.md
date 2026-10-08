@@ -1,6 +1,6 @@
 # DocuMind development progress
 
-Verified on **2026-10-08 (Europe/Berlin)** for the cookie-authentication step. Unrelated pre-existing comment edits are preserved outside this commit. Registration and Identity wiring were already committed; this step builds on them. No AGENTS.md instructions were found in the repository or its ancestor directories.
+Verified on **2026-10-08 (Europe/Berlin)** for the unit-testing step, building on the verified cookie-authentication feature. Unrelated pre-existing comment edits are preserved. Registration and Identity wiring were already committed; this step builds on them. No AGENTS.md instructions were found in the repository or its ancestor directories.
 
 ## Actual status
 
@@ -8,13 +8,14 @@ DocuMind has verified Identity registration, email confirmation, cookie login/lo
 
 ### Complete and verified
 
-- **Solution structure:** all four application projects and the new executable account-flow checker target net10.0 and build. API references Services and Data; Services references Data; Worker references Services and Data. These references compile, but referencing a project does not automatically register its services.
+- **Solution structure:** all four application projects, the executable account-flow checker, and the new unit-test project target net10.0 and build (six projects total). API references Services and Data; Services references Data; Worker references Services and Data. These references compile, but referencing a project does not automatically register its services.
 - **PostgreSQL and pgvector:** a read-only query through the existing local connection verified PostgreSQL **17.11** and vector extension **0.8.7**. The API readiness route returned **HTTP 200, Healthy**.
 - **Identity schema:** the live database contains AspNetUsers, AspNetRoles, AspNetUserClaims, AspNetRoleClaims, AspNetUserLogins, AspNetUserRoles, and AspNetUserTokens. Migration history contains **20261007065231_InitialIdentity**. EF reports no pending model changes. No migration was applied or rolled back against the existing application database during this step. The flow checker applied InitialIdentity only to its newly created temporary database.
 - **API scaffold:** controllers are mapped, development OpenAPI returns HTTP 200, and the sample weather endpoint returns five forecasts. The account controller exposes registration, confirmation, resend, csrf, login, logout, and me routes alongside /WeatherForecast. The readiness route is mapped separately.
 - **Registration and confirmation:** AccountService in Services uses UserManager for account creation, password validation/hashing, and confirmation. HTTP checks verified unconfirmed accounts, valid confirmation and stored state, invalid input, weak passwords, matching-password validation, generic duplicate responses, and malformed/forged/expired tokens. Registration does not issue a sign-in cookie.
 - **Resend and privacy:** valid registration and resend requests return the same generic 202 message. Unknown and confirmed addresses disclose no account state. The checks verified actual previews, recipient cooldown, per-IP 429 responses (including route casing), concurrent duplicates, and unchanged account counts.
 - **Email delivery and link configuration:** Development-only JSON previews go to ignored backend/storage/email-previews. Trusted configured application URLs, URL-safe token encoding, token expiration, and production startup refusal without a real sender were tested. No credentials or tokens were committed.
+- **Unit testing:** DocuMind.UnitTests is discoverable through dotnet test and IDE test tooling. All **109 backend unit cases** passed for account/session services, controller behavior, request validation, and security configuration. All **18 frontend helper cases** passed using Node's built-in test runner. These tests do not require PostgreSQL or a mail provider. See [unit-testing.md](unit-testing.md) for commented commands and scope.
 - **Cookie sessions and CSRF:** confirmed-email enforcement, generic authentication failures, Identity lockout counting, successful login, persistent HttpOnly cookies, subsequent authenticated requests, safe current-user fields, logout, and anonymous 401 responses passed real HTTP checks. Missing, forged, and pre-login CSRF tokens were rejected. Email-link GET remains safe; confirmation is a protected POST.
 - **Same-origin development:** Next.js rewrites /api/* to the backend during development. Accounts:ApplicationUrl defaults to localhost:3000. The client apiFetch helper obtains fresh CSRF tokens and sends cookies through relative /api/ requests. The main account/session checks passed through the real rewrite.
 - **Worker scaffold:** the hosted worker starts and logs its heartbeat. Its current purpose is demonstration background execution, not ingestion.
@@ -36,9 +37,11 @@ DocuMind has verified Identity registration, email confirmation, cookie login/lo
 - **Frontend integration:** the home page, metadata, and navigation remain Next.js starter content. There are no registration/login forms, document upload/list views, or chat UI. The same-origin proxy and API request helper exist but are not yet used by account UI.
 - **Production browser deployment:** implement same-origin reverse-proxy routing, trusted forwarded headers, real HTTPS/mail delivery, shared rate limiting, and persistent protected Data Protection keys before deployment. Browser UI automation remains absent. The development origin strategy and CSRF flow are implemented.
 - **RAG pipeline:** document storage/upload, text extraction, chunking, queueing, embedding generation, vector retrieval, answer generation, citations, and per-user document ownership checks are absent.
-- **Automated testing:** backend/tests/DocuMind.Auth.FlowChecks now provides repeatable HTTP/PostgreSQL integration verification with no additional test packages. It is an executable checker run with dotnet run, not a dotnet test target. Session/CSRF/lockout checks are included; broader RAG tests and a frontend UI test suite remain missing.
+- **Remaining testing:** backend/tests/DocuMind.Auth.FlowChecks provides real HTTP/PostgreSQL verification through dotnet run, separately from the new dotnet test unit suite and frontend npm test helper suite. Account/session/CSRF/lockout checks are included. RAG tests and browser UI automation remain missing because those features/screens are not yet implemented.
 
 ## Package and project inspection
+
+- Unit-test-only references: xunit.v3 **3.2.2**, xunit.runner.visualstudio **3.1.5**, Microsoft.NET.Test.Sdk **18.0.1**, and Moq **4.20.72**, all PrivateAssets=all. Official package compatibility and the local restore/build/test verified the net10.0 combination. The frontend adds an npm test script with no new dependency.
 
 - Services now references the installed Microsoft.AspNetCore.App shared framework for Identity token/URL helpers; no package versions were upgraded. The flow checker references API to reuse the existing dependencies.
 - Installed .NET SDK: **10.0.301**. All projects target **net10.0** with nullable references and implicit usings enabled.
@@ -52,6 +55,15 @@ DocuMind has verified Identity registration, email confirmation, cookie login/lo
 Official references consulted: [Npgsql EF Core 10 release notes](https://www.npgsql.org/efcore/release-notes/10.0.html), [ASP.NET Core Identity documentation](https://learn.microsoft.com/en-us/aspnet/core/security/authentication/identity?view=aspnetcore-10.0), [Next.js font documentation](https://nextjs.org/docs/app/getting-started/fonts), [SignInManager password sign-in](https://learn.microsoft.com/en-us/dotnet/api/microsoft.aspnetcore.identity.signinmanager-1.passwordsigninasync?view=aspnetcore-10.0), [MVC antiforgery](https://learn.microsoft.com/en-us/aspnet/core/security/anti-request-forgery?view=aspnetcore-10.0), and [Next.js rewrites](https://nextjs.org/docs/app/api-reference/config/next-config-js/rewrites).
 
 ## Checks and limitations
+
+Passed during this unit-testing step:
+
+- Solution restore for the new test-only dependencies and complete six-project build: **zero warnings/errors**. Existing application package versions were unchanged.
+- Solution-level dotnet test: **109 passed, zero failed/skipped**.
+- Frontend helper tests: **18 passed, zero failed/skipped**. Full ESLint and production build/TypeScript validation also passed.
+- Unchanged direct HTTP/PostgreSQL integration checker: **62 assertions passed**, using and cleaning up its isolated test database/previews. Existing application data was preserved. The prior Next.js proxy run was not repeated for this test-only step.
+
+The following cookie-authentication evidence is retained from the preceding implementation:
 
 Passed during this cookie-authentication step:
 
@@ -88,7 +100,7 @@ See [cookie-authentication-testing.md](cookie-authentication-testing.md) for sam
 
 1. Verify the normal local API connection and application URL through local settings/user secrets; reproduce readiness and inspect Docker health from an authorized terminal while keeping the existing volume.
 2. **Completed:** controller-based registration, confirmation, resend, ignored Development previews, validation/privacy/rate limits, and real HTTP/PostgreSQL verification.
-3. **Completed:** cookie login/logout/current-user, confirmed-email enforcement, lockout, generic failures, rate limits, CSRF, and same-origin development proxy verification. Build registration/login/resend/confirmation UI using apiFetch and add browser tests next.
+3. **Completed:** cookie login/logout/current-user, confirmed-email enforcement, lockout, generic failures, rate limits, CSRF, same-origin development proxy verification, and focused backend/frontend unit suites. Build registration/login/resend/confirmation UI using apiFetch and add browser tests next.
 4. Implement a real email provider with secret configuration and reliable delivery; validate persistent/shared Data Protection and multi-instance rate limiting before production deployment.
 5. Implement password-reset/account-management flows with privacy, CSRF, and rate-limit checks; verify expiry, key persistence, and production HTTPS behavior.
 6. Add document ownership/upload/storage and metadata migrations, followed by worker queueing, extraction, chunking, embeddings, vector retrieval, and grounded answers with citations. Test isolation and failures throughout.
@@ -101,8 +113,13 @@ Run from the repository root in PowerShell with the installed SDK, Node.js, and 
 # Check all backend projects without changing installed package versions.
 dotnet build backend/DocuMind.slnx --no-restore
 
+# Run backend unit tests without a database or running API.
+dotnet test backend/DocuMind.slnx --no-build --no-restore
+
 # Lint and compile the complete frontend, including its TypeScript validation.
 Push-Location frontend
+# Check the browser request helper using mocked fetch; no running frontend/API is required.
+npm test
 npm run lint
 npm run build
 Pop-Location
