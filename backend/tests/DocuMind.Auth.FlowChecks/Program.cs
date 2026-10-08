@@ -60,7 +60,7 @@ internal static class RegistrationFlowChecks
             }
 
             var testConnection = new NpgsqlConnectionStringBuilder(connectionString) { Database = databaseName }.ConnectionString;
-            var databaseOptions = new DbContextOptionsBuilder<DocuMindDbContext>().UseNpgsql(testConnection).Options;
+            var databaseOptions = new DbContextOptionsBuilder<DocuMindDbContext>().UseDocuMindPostgreSql(testConnection).Options;
             await using var database = new DocuMindDbContext(databaseOptions);
             await database.Database.MigrateAsync();
 
@@ -164,7 +164,7 @@ internal static class RegistrationFlowChecks
             using var limitedResend = await PostProtectedAsync(client, "api/v1/auth/resend-confirmation", new { email });
             Assert(limitedResend.StatusCode == HttpStatusCode.TooManyRequests, "Resend also enforces its per-IP rate limit.");
 
-            await VerifyCookieSessionsAsync(client, database, user, email, password);
+            await VerifyCookieSessionsAsync(client, database, user, email, password, testConnection);
             VerifyProductionCookieOptions();
 
             // A second instance gives expiry an actual short lifetime, without waiting 24 hours.
@@ -309,7 +309,7 @@ internal static class RegistrationFlowChecks
 
     /// <summary>Verifies cookie sessions, CSRF enforcement, safe projections, lockout, and rate limiting through HTTP.</summary>
     private static async Task VerifyCookieSessionsAsync(HttpClient client, DocuMindDbContext database,
-        ApplicationUser user, string email, string password)
+        ApplicationUser user, string email, string password, string testConnection)
     {
         // Raw requests deliberately omit the required header to prove validation is enforced.
         using var missingLogin = await client.PostAsJsonAsync("api/v1/auth/login", new { email, password });
@@ -359,7 +359,8 @@ internal static class RegistrationFlowChecks
         Assert(afterLogout.StatusCode == HttpStatusCode.Unauthorized, "Logout clears browser authentication.");
 
         // Start fresh rate-limit counters so five wrong passwords can be tested without waiting a minute.
-        var separateApi = await StartApiAsync(database.Database.GetConnectionString()!);
+        // Reuse the private original configuration: an opened provider connection may redact its password.
+        var separateApi = await StartApiAsync(testConnection);
         using var lockoutClient = new HttpClient { BaseAddress = separateApi.Address };
         using var unprotectedRegister = await lockoutClient.PostAsJsonAsync("api/v1/auth/register",
             new { email = NewEmail(), password, confirmPassword = password });

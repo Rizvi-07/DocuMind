@@ -1,6 +1,6 @@
 # Unit tests
 
-DocuMind now has fast isolated tests alongside the existing real HTTP/PostgreSQL checker. Backend unit tests use xUnit v3 and Moq; frontend helper tests use Node's built-in test runner and the already-installed TypeScript compiler. No application behavior or database schema was changed for this step.
+DocuMind now has fast isolated tests alongside the existing real HTTP/PostgreSQL checker. Backend unit tests use xUnit v3 and Moq; frontend helper tests use Node's built-in test runner and the already-installed TypeScript compiler. The initial unit-testing step changed no application behavior/schema. The subsequent data-model step adds job state tests and a separate real PostgreSQL checker.
 
 ## What is covered
 
@@ -9,9 +9,10 @@ DocuMind now has fast isolated tests alongside the existing real HTTP/PostgreSQL
 - AuthController: login/logout responses and service delegation, safe current-user JSON, missing-account responses, registration validation feedback and generic accepted messages, resend privacy, JSON/form confirmation outcomes, CSRF request-token responses, and encoded safe email-link forms with restrictive response headers.
 - Account request contracts: required fields, email format/length, registration password bounds/matching confirmation, short wrong passwords allowed through login validation, and confirmation-value size limits.
 - Authentication configuration: Development versus Production/Staging cookie requirements, HttpOnly and SameSite settings, global antiforgery filter registration, 401/403 redirect handlers, trusted-link URL rules, lifetime/cooldown boundaries, dedicated confirmation token options, and non-Development email-sender guards.
+- ProcessingJob: due-time eligibility, invalid lease parameters, foreign/expired lease rejection, renewal, success, backoff, bounded attempts, interrupted-worker recovery, stale lease fencing, and safe failure messages. A fixed clock keeps these decisions deterministic without PostgreSQL.
 - Frontend apiFetch: unsafe-path rejection, safe methods, protected mutations, fresh identity-bound CSRF request tokens, preserved payload/headers/signals, forced same-origin credentials/no-store caching, unchanged response propagation, and refusing a mutation after failed CSRF bootstrap.
 
-There are five backend test classes plus reusable support doubles under backend/tests/DocuMind.UnitTests. frontend/tests/api.test.mjs tests the actual frontend/src/lib/api.ts implementation through in-memory transpilation. The production frontend build provides the separate TypeScript type check.
+There are six backend test classes plus reusable support doubles under backend/tests/DocuMind.UnitTests. frontend/tests/api.test.mjs tests the actual frontend/src/lib/api.ts implementation through in-memory transpilation. The production frontend build provides the separate TypeScript type check.
 
 ## How to read a test
 
@@ -30,7 +31,7 @@ From D:\DotNetProject\DocuMind, use the installed .NET 10 SDK and frontend Node.
 Set-Location D:\DotNetProject\DocuMind
 dotnet restore backend/DocuMind.slnx
 
-# Build all six projects, then run discoverable backend unit tests without starting PostgreSQL.
+# Build all seven projects, then run discoverable backend unit tests without starting PostgreSQL.
 dotnet build backend/DocuMind.slnx --no-restore
 dotnet test backend/DocuMind.slnx --no-build --no-restore
 if ($LASTEXITCODE -ne 0) { throw 'Backend unit tests failed.' }
@@ -47,11 +48,11 @@ npm run build
 Pop-Location
 ~~~
 
-The backend project is discoverable by IDE test tooling through the VSTest adapter. The console integration checker is a separate command and is not run by dotnet test. See [cookie-authentication-testing.md](cookie-authentication-testing.md) for its private connection setup and direct/proxy commands. Do not put test database credentials in a test source file or tracked settings.
+The backend project is discoverable by IDE test tooling through the VSTest adapter. The two console integration checkers are separate commands and are not run by dotnet test. [data-model.md](data-model.md) describes the PostgreSQL constraint/vector/concurrency checks and guarded local migration mode. See [cookie-authentication-testing.md](cookie-authentication-testing.md) for its private connection setup and direct/proxy commands. Do not put test database credentials in a test source file or tracked settings.
 
 ## Verified results and limits
 
-Verified on 2026-10-08: **109 backend unit cases and 18 frontend helper cases passed**, with no failures or skips. The complete backend solution built with zero warnings/errors. Frontend ESLint and production compilation/TypeScript validation passed. The unchanged isolated integration checker was rerun directly and passed **62 assertions**, cleaning up its generated database and previews. The earlier same-origin proxy evidence is retained; that proxy run was not repeated for this test-only change.
+Verified on 2026-10-08: **119 backend unit cases passed** in the data-model step. The prior unit-testing step passed **109 backend cases and 18 frontend helper cases**, with no failures or skips. The complete backend solution built with zero warnings/errors. Frontend ESLint and production compilation/TypeScript validation passed. The account checker was rerun directly with the shared vector provider mapping and passed **62 assertions**, cleaning up its generated database and previews. The new disposable Data checker additionally passed **40 assertions** against real PostgreSQL/pgvector, including xmin races and stale completions. Frontend lint/build/tests were not repeated for the Data-only step. The earlier same-origin proxy evidence is retained; that proxy run was not repeated for this test-only change.
 
 No browser UI automation, coverage-percentage report, production TLS/email-provider test, durable Data Protection restart test, or live Docker inspection was performed. Tests cover the listed custom behavior; their count does not imply that every line or future feature is tested. Add behavior-focused cases when account rules or frontend screens change.
 

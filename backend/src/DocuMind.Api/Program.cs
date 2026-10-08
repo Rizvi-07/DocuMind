@@ -22,7 +22,7 @@ var connectionString =
         "Connection string 'DocuMind' is missing.");
 
 builder.Services.AddDbContext<DocuMindDbContext>(options =>
-    options.UseNpgsql(connectionString));
+    options.UseDocuMindPostgreSql(connectionString));
 
 // Register Identity's user, role, and sign-in services.
 // AddIdentity also registers Identity's authentication cookies.
